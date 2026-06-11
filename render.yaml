@@ -4,13 +4,11 @@ services:
   - type: web
     name: bici-klaviyo-inventory-feed
     runtime: python
-    # "free" works, but free web services sleep after ~15 min idle, so the first
-    # request after a quiet spell cold-starts (~30-60s) and the Klaviyo feed may
-    # time out (the email then just renders the "not in stock" branch). The
-    # keep-alive GitHub Action (.github/workflows/keep-alive.yml) pings the
-    # health URL every ~14 min to prevent that. Upgrade to "starter" if you'd
-    # rather not rely on the pinger.
-    plan: free
+    # "starter" is always-on (no spin-down / cold starts), so the Klaviyo feed
+    # responds instantly at send time. With this plan the keep-alive GitHub
+    # Action is unnecessary and can be deleted. ("free" also works but sleeps
+    # after ~15 min idle and would need the keep-alive pinger.)
+    plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /
