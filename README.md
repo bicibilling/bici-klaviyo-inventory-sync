@@ -1,65 +1,92 @@
 # bici-klaviyo-inventory-sync
 
-Pushes **per-store inventory** from Shopify into the **Klaviyo product catalog**
-so email flows (e.g. browse abandonment) can tell a customer an item is in stock
-at their local Bici store.
+A tiny web service that tells a **Klaviyo web feed** how much of a product is in
+stock at each Bici store, so browse-abandonment (and other) emails can say
+"in stock to see at your local store."
 
-## What it does
+## How it fits together
 
-For every active Shopify product it sums the per-location stock across **all
-variants** and writes these fields onto the product's Klaviyo catalog item as
-`custom_metadata`:
+```
+Customer views a product
+        │  Klaviyo records a "Viewed Product" event (ProductID = Shopify product id)
+        ▼
+Browse-abandonment email is built (at send time)
+        │  Klaviyo fetches the web feed:
+        │      GET /inventory?product_id={{ event.ProductID }}&token=<FEED_TOKEN>
+        ▼
+This service sums the per-store variant metafields in Shopify and returns JSON
+        ▼
+Email renders conditional content from {{ feeds.bici_inventory.* }}
+```
 
-| custom_metadata field          | source (variant metafield, namespace `Channels`) |
-| ------------------------------ | ------------------------------------------------- |
-| `victoria_inventory`           | `bicivictoria_inventory`                          |
-| `langford_inventory`           | `bicilangford_inventory`                          |
-| `adanac_inventory`             | `biciadanac_inventory`                            |
-| `virtualwarehouse_inventory`   | `virtualwarehouse_inventory`                      |
-| `local_inventory_synced_at`    | timestamp of the sync run (UTC ISO-8601)          |
+## The endpoint
 
-It's a **full sweep**: every run refreshes every product.
+```
+GET /inventory?product_id=8073171337279&token=<FEED_TOKEN>
+```
+
+```json
+{
+  "product_id": "8073171337279",
+  "title": "Rapha Women's Pro Team Training Jersey",
+  "found": true,
+  "victoria": 5,
+  "langford": 0,
+  "adanac": 13,
+  "virtualwarehouse": 0,
+  "in_stock_anywhere": true
+}
+```
+
+It sums `Channels.bicivictoria_inventory` / `bicilangford_inventory` /
+`biciadanac_inventory` / `virtualwarehouse_inventory` across **all variants** of
+the product. An unknown product or a Shopify hiccup returns all-zeros with
+`found: false` and HTTP 200, so the email still renders (the safe "not in stock"
+branch) instead of breaking. Results are cached in memory for 5 minutes.
 
 ## Use it in a Klaviyo flow
 
-In a browse-abandonment email, look up the abandoned product and read the field:
-
-```liquid
-{% catalog event.ProductID %}
-  {% if catalog_item.custom_metadata.langford_inventory > 0 %}
-    Good news — it's in stock to see at our Langford store!
-  {% endif %}
-{% endcatalog %}
-```
+1. **Create the web feed** — Klaviyo → Settings → Web Feeds (or the flow email's
+   feed config). Name it `bici_inventory`, method GET, URL:
+   `https://<your-render-url>/inventory?product_id={{ event.ProductID }}&token=<FEED_TOKEN>`
+2. **Use it in the email** with conditional content:
+   ```liquid
+   {% if feeds.bici_inventory.in_stock_anywhere %}
+     Good news — it's in stock to see in person! In stock at:
+     {% if feeds.bici_inventory.victoria > 0 %}Victoria{% endif %}
+     {% if feeds.bici_inventory.langford > 0 %}Langford{% endif %}
+     {% if feeds.bici_inventory.adanac > 0 %}Vancouver (Adanac){% endif %}
+   {% else %}
+     Want it shipped? Order online and we'll send it your way.
+   {% endif %}
+   ```
 
 ## Configuration
 
-Set these as environment variables (local `.env`, or GitHub Actions secrets):
+| Variable              | What                                                |
+| --------------------- | --------------------------------------------------- |
+| `SHOPIFY_STORE`       | myshopify subdomain, e.g. `la-bicicletta-vancouver` |
+| `SHOPIFY_ADMIN_TOKEN` | Shopify Admin token with `read_products`            |
+| `FEED_TOKEN`          | shared secret added to the feed URL (optional)      |
 
-| Variable              | What                                                  |
-| --------------------- | ----------------------------------------------------- |
-| `SHOPIFY_STORE`       | myshopify subdomain, e.g. `la-bicicletta-vancouver`   |
-| `SHOPIFY_ADMIN_TOKEN` | Shopify Admin token with `read_products`              |
-| `KLAVIYO_API_KEY`     | Klaviyo **private** key with Catalogs full access     |
+The service does **not** need a Klaviyo key — Klaviyo calls it, not vice-versa.
 
-Copy `.env.example` to `.env` for local runs (`.env` is gitignored).
-
-## Running
+## Run locally
 
 ```bash
 pip install -r requirements.txt
-
-python sync.py --dry-run --limit 50   # read + print, write nothing (safe test)
-python sync.py --discover 123456      # confirm the Klaviyo catalog item id format
-python sync.py                        # full sweep: read Shopify, push to Klaviyo
+cp .env.example .env   # fill in the values
+uvicorn app:app --reload
+curl "http://localhost:8000/inventory?product_id=8073171337279"
 ```
 
-## Scheduling
+## Deploy (Render)
 
-Runs hourly via GitHub Actions (`.github/workflows/sync.yml`) — the repo is
-public, so Actions minutes are unlimited/free. Add `SHOPIFY_STORE`,
-`SHOPIFY_ADMIN_TOKEN`, and `KLAVIYO_API_KEY` under
-**Settings → Secrets and variables → Actions**. You can also trigger a run
-manually from the **Actions** tab ("Run workflow").
+Blueprint deploy from `render.yaml` (a `web` service). Set `SHOPIFY_STORE`,
+`SHOPIFY_ADMIN_TOKEN`, and `FEED_TOKEN` in the dashboard.
 
-No secrets live in the code — only in `.env` (gitignored) and Actions secrets.
+Free Render web services sleep after ~15 min idle. The
+`.github/workflows/keep-alive.yml` Action pings the health URL every ~14 min to
+keep it warm so the feed doesn't cold-start mid-send — set the repo **variable**
+`FEED_HEALTH_URL` to the deployed root URL. Move to a paid plan and delete that
+workflow if you'd rather not rely on the pinger.

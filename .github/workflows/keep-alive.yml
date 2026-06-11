@@ -1,0 +1,23 @@
+name: Keep-alive ping
+
+# Free Render web services sleep after ~15 min idle. Ping the health URL every
+# ~14 min so the inventory feed is always warm when Klaviyo calls it at email
+# send time. Set the repo variable FEED_HEALTH_URL to the deployed root URL,
+# e.g. https://bici-klaviyo-inventory-feed.onrender.com/
+# (Settings -> Secrets and variables -> Actions -> Variables.)
+# Delete this workflow if you move the service to a paid (always-on) plan.
+on:
+  schedule:
+    - cron: "*/14 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping health endpoint
+        run: |
+          URL="${{ vars.FEED_HEALTH_URL }}"
+          if [ -z "$URL" ]; then echo "FEED_HEALTH_URL not set; skipping"; exit 0; fi
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 "$URL")
+          echo "GET $URL -> $code"

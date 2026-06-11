@@ -1,0 +1,23 @@
+# Render Blueprint. In Render: New + → Blueprint → pick this repo, then fill in
+# the secret values (sync: false) in the dashboard.
+services:
+  - type: web
+    name: bici-klaviyo-inventory-feed
+    runtime: python
+    # "free" works, but free web services sleep after ~15 min idle, so the first
+    # request after a quiet spell cold-starts (~30-60s) and the Klaviyo feed may
+    # time out (the email then just renders the "not in stock" branch). The
+    # keep-alive GitHub Action (.github/workflows/keep-alive.yml) pings the
+    # health URL every ~14 min to prevent that. Upgrade to "starter" if you'd
+    # rather not rely on the pinger.
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    envVars:
+      - key: SHOPIFY_STORE
+        sync: false
+      - key: SHOPIFY_ADMIN_TOKEN # shpat_... with read_products
+        sync: false
+      - key: FEED_TOKEN # shared secret added to the Klaviyo feed URL
+        sync: false
